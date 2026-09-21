@@ -1,0 +1,18 @@
+# PDF Scan Enhancer - Python 依赖
+# 安装: pip install -r requirements.txt
+#
+# 注意：以下仅为 Python 包依赖，还需手动安装系统级工具：
+#   - Tesseract OCR: https://github.com/UB-Mannheim/tesseract/wiki
+#   - Ghostscript:   https://ghostscript.com/releases/gsdnld.html
+#   - unpaper(可选): https://github.com/unpaper/unpaper/releases
+
+# OCR 与 PDF 处理
+ocrmypdf==16.13.0
+pikepdf==10.13.0
+Pillow==12.3.0
+
+# 结构化文本提取
+mineru==4.0.5
+
+# 图形界面
+PySide6==6.11.2

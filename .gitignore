@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 测试输出
+test_output/
+output/
+
+# 测试用的 PDF 文件（体积大，不应提交）
+*.pdf
+
+# 系统 / 临时文件
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# MinerU 模型缓存（首次运行自动下载，约 1.5GB）
+.cache/
+
+# 日志
+*.log
+
+# 临时笔记
+all.md
