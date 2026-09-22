@@ -1,21 +1,22 @@
 from PySide6.QtCore import QThread, Signal
 from src.core.ocr_engine import OCREngine
 from src.core.extract_engine import ExtractEngine
+from src.core.translate_engine import TranslateEngine
 from pathlib import Path
+
 
 class ProcessWorker(QThread):
     """后台处理线程，负责跑完整流程"""
-    # 信号：日志文本、进度阶段、完成、出错
     log_updated = Signal(str)
-    progress_stage = Signal(int)  # 0-100，阶段式进度
-    finished_ok = Signal(str)     # 成功，返回输出文件路径
-    error_occurred = Signal(str)  # 失败，返回错误信息
+    progress_stage = Signal(int)
+    finished_ok = Signal(str)
+    error_occurred = Signal(str)
 
     def __init__(self, input_pdf: str, output_dir: str, options: dict):
         super().__init__()
         self.input_pdf = input_pdf
         self.output_dir = output_dir
-        self.options = options  # 界面传过来的参数：deskew/clean/language等
+        self.options = options
 
     def run(self):
         try:
@@ -42,9 +43,10 @@ class ProcessWorker(QThread):
                 return
 
             self.log_updated.emit("✅ OCR增强完成，生成增强版PDF")
-            self.progress_stage.emit(60)
+            self.progress_stage.emit(50)
 
             # 阶段2：结构化提取
+            md_path = None
             if self.options.get("extract_md", True):
                 self.log_updated.emit("▶ 开始结构化提取：版面分析 + 生成Markdown")
 
@@ -54,8 +56,44 @@ class ProcessWorker(QThread):
                 )
 
                 self.log_updated.emit(f"✅ 文本提取完成：{md_path}")
-                self.progress_stage.emit(100)
+                self.progress_stage.emit(70)
 
+            # 阶段3：翻译
+            if self.options.get("translate", False) and md_path:
+                self.log_updated.emit("▶ 开始翻译...")
+
+                translate_opts = self.options.get("translate_options", {})
+                engine = TranslateEngine(
+                    provider=translate_opts.get("provider", "google"),
+                    source=translate_opts.get("source", "auto"),
+                    target=translate_opts.get("target", "zh-CN"),
+                    baidu_appid=translate_opts.get("baidu_appid", ""),
+                    baidu_key=translate_opts.get("baidu_key", ""),
+                )
+
+                provider_name = "Google" if engine.provider == "google" else "百度"
+                self.log_updated.emit(f"  翻译引擎：{provider_name}")
+
+                def on_translate_progress(done, total, pct):
+                    self.log_updated.emit(f"  翻译进度：{done}/{total} 段 ({pct}%)")
+                    translate_pct = 70 + int(pct * 0.25)
+                    self.progress_stage.emit(translate_pct)
+
+                bilingual = translate_opts.get("bilingual", True)
+                if bilingual:
+                    bilingual_path = engine.translate_markdown_bilingual(
+                        md_path, progress_callback=on_translate_progress,
+                    )
+                    self.log_updated.emit(f"✅ 双语对照完成：{bilingual_path}")
+                else:
+                    translated_path = engine.translate_markdown(
+                        md_path, progress_callback=on_translate_progress,
+                    )
+                    self.log_updated.emit(f"✅ 翻译完成：{translated_path}")
+
+                self.progress_stage.emit(95)
+
+            self.progress_stage.emit(100)
             self.finished_ok.emit(ocr_output)
 
         except Exception as e:

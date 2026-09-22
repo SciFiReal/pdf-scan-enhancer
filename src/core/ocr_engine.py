@@ -13,8 +13,8 @@ _SEARCH_DIRS = [
     Path(r"D:\Downloads"),
     Path(r"C:\Downloads"),
     Path.home() / "Downloads",
-    Path(r"D:\"),
-    Path(r"E:\"),
+    Path("D:/"),
+    Path("E:/"),
 ]
 
 
