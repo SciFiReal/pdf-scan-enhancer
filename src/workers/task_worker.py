@@ -2,6 +2,7 @@ from PySide6.QtCore import QThread, Signal
 from src.core.ocr_engine import OCREngine
 from src.core.extract_engine import ExtractEngine
 from src.core.translate_engine import TranslateEngine
+from src.core.export_engine import ExportEngine
 from pathlib import Path
 
 
@@ -64,14 +65,18 @@ class ProcessWorker(QThread):
 
                 translate_opts = self.options.get("translate_options", {})
                 engine = TranslateEngine(
-                    provider=translate_opts.get("provider", "google"),
+                    provider=translate_opts.get("provider", "ollama"),
                     source=translate_opts.get("source", "auto"),
                     target=translate_opts.get("target", "zh-CN"),
                     baidu_appid=translate_opts.get("baidu_appid", ""),
                     baidu_key=translate_opts.get("baidu_key", ""),
+                    ollama_url=translate_opts.get("ollama_url", "http://localhost:11434"),
+                    ollama_model=translate_opts.get("ollama_model", ""),
+                    glossary=translate_opts.get("glossary"),
                 )
 
-                provider_name = "Google" if engine.provider == "google" else "百度"
+                provider_names = {"ollama": "Ollama 本地模型", "baidu": "百度翻译", "google": "Google 翻译"}
+                provider_name = provider_names.get(engine.provider, engine.provider)
                 self.log_updated.emit(f"  翻译引擎：{provider_name}")
 
                 def on_translate_progress(done, total, pct):
@@ -79,19 +84,27 @@ class ProcessWorker(QThread):
                     translate_pct = 70 + int(pct * 0.25)
                     self.progress_stage.emit(translate_pct)
 
-                bilingual = translate_opts.get("bilingual", True)
-                if bilingual:
-                    bilingual_path = engine.translate_markdown_bilingual(
-                        md_path, progress_callback=on_translate_progress,
-                    )
-                    self.log_updated.emit(f"✅ 双语对照完成：{bilingual_path}")
-                else:
-                    translated_path = engine.translate_markdown(
-                        md_path, progress_callback=on_translate_progress,
-                    )
-                    self.log_updated.emit(f"✅ 翻译完成：{translated_path}")
+                # 始终生成两个文件：纯译文 + 双语对照
+                translated_path, bilingual_path = engine.translate_markdown_both(
+                    md_path, progress_callback=on_translate_progress,
+                )
+                self.log_updated.emit(f"✅ 纯译文完成：{translated_path}")
+                self.log_updated.emit(f"✅ 双语对照完成：{bilingual_path}")
 
                 self.progress_stage.emit(95)
+
+            # 阶段4：导出
+            export_format = self.options.get("export_format", "")
+            if export_format and md_path:
+                self.log_updated.emit(f"▶ 导出为 {export_format.upper()} 格式...")
+                try:
+                    # 优先导出纯译文，其次原始英文
+                    export_source = translated_path if self.options.get("translate") else md_path
+                    export_path = ExportEngine.export(export_source, export_format)
+                    self.log_updated.emit(f"✅ 导出完成：{export_path}")
+                except Exception as e:
+                    self.log_updated.emit(f"⚠ 导出失败：{e}")
+                self.progress_stage.emit(98)
 
             self.progress_stage.emit(100)
             self.finished_ok.emit(ocr_output)
