@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QComboBox, QGridLayout, QListWidget, QInputDialog,
     QMessageBox, QDialog, QDialogButtonBox, QTabWidget,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from src.workers.task_worker import ProcessWorker
 from src.workers.batch_worker import BatchWorker
 from src.core.translate_engine import LANGUAGES, list_ollama_models, GlossaryLoader
@@ -18,12 +18,25 @@ from src.core.preset_manager import PresetManager
 PROVIDER_MAP = {0: "ollama", 1: "baidu", 2: "google"}
 
 
+class _ModelListWorker(QThread):
+    models_loaded = Signal(list)
+
+    def __init__(self, url: str):
+        super().__init__()
+        self.url = url
+
+    def run(self):
+        models = list_ollama_models(self.url)
+        self.models_loaded.emit(models)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDF Scan Enhancer - 扫描PDF增强工具 v0.4")
+        self.setWindowTitle("PDF Scan Enhancer - 扫描PDF增强工具 v0.5")
         self.resize(800, 860)
         self.worker = None
+        self._model_worker = None
         self.preset_mgr = PresetManager()
         self.last_output_dir = ""
 
@@ -93,10 +106,31 @@ class MainWindow(QMainWindow):
         self.chk_extract = QCheckBox("提取结构化Markdown文本")
         self.chk_extract.setChecked(True)
 
+        ocr_lang_row = QHBoxLayout()
+        ocr_lang_row.addWidget(QLabel("OCR 识别语言："))
+        self.combo_ocr_lang = QComboBox()
+        self.combo_ocr_lang.addItem("英文", "eng")
+        self.combo_ocr_lang.addItem("简体中文 + 英文", "chi_sim+eng")
+        self.combo_ocr_lang.addItem("繁体中文 + 英文", "chi_tra+eng")
+        self.combo_ocr_lang.addItem("日文 + 英文", "jpn+eng")
+        self.combo_ocr_lang.addItem("韩文 + 英文", "kor+eng")
+        ocr_lang_row.addWidget(self.combo_ocr_lang)
+        ocr_lang_row.addStretch()
+
+        pages_row = QHBoxLayout()
+        pages_row.addWidget(QLabel("页码范围："))
+        self.edit_pages = QLineEdit()
+        self.edit_pages.setPlaceholderText("如：1-50,51-100,101-250（多段自动合并，留空=全部）")
+        self.edit_pages.setMaximumWidth(250)
+        pages_row.addWidget(self.edit_pages)
+        pages_row.addStretch()
+
         ocr_layout.addWidget(self.chk_deskew)
         ocr_layout.addWidget(self.chk_clean)
         ocr_layout.addWidget(self.chk_force)
         ocr_layout.addWidget(self.chk_extract)
+        ocr_layout.addLayout(ocr_lang_row)
+        ocr_layout.addLayout(pages_row)
         layout.addWidget(ocr_group)
 
         # 4. 翻译选项
@@ -135,15 +169,6 @@ class MainWindow(QMainWindow):
             self.combo_target.addItem(name, code)
         self.combo_target.setCurrentIndex(0)
         param_layout.addWidget(self.combo_target, 2, 1)
-
-        self.chk_bilingual = QCheckBox("生成双语对照（原文+译文）")
-        self.chk_bilingual.setChecked(True)
-        param_layout.addWidget(self.chk_bilingual, 3, 0, 1, 2)
-
-        self.chk_pure_translated = QCheckBox("同时生成纯译文文件")
-        self.chk_pure_translated.setChecked(True)
-        self.chk_pure_translated.setEnabled(False)
-        param_layout.addWidget(self.chk_pure_translated, 4, 0, 1, 2)
 
         translate_layout.addWidget(param_widget)
 
@@ -227,9 +252,14 @@ class MainWindow(QMainWindow):
         layout.addLayout(action_row)
 
         # 7. 进度条
+        progress_row = QHBoxLayout()
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
-        layout.addWidget(self.progress_bar)
+        self.lbl_stage = QLabel("")
+        self.lbl_stage.setStyleSheet("color: #666; padding-left: 8px;")
+        progress_row.addWidget(self.progress_bar)
+        progress_row.addWidget(self.lbl_stage)
+        layout.addLayout(progress_row)
 
         # 8. 日志输出
         layout.addWidget(QLabel("处理日志："))
@@ -290,6 +320,14 @@ class MainWindow(QMainWindow):
         self.chk_extract.setChecked(preset.get("extract_md", True))
         self.chk_translate.setChecked(preset.get("translate", False))
 
+        lang = preset.get("language", "eng")
+        for i in range(self.combo_ocr_lang.count()):
+            if self.combo_ocr_lang.itemData(i) == lang:
+                self.combo_ocr_lang.setCurrentIndex(i)
+                break
+
+        self.edit_pages.setText(preset.get("pages", ""))
+
         t_opts = preset.get("translate_options", {})
         provider = t_opts.get("provider", "ollama")
         provider_idx = {"ollama": 0, "baidu": 1, "google": 2}.get(provider, 0)
@@ -306,8 +344,6 @@ class MainWindow(QMainWindow):
             if self.combo_target.itemData(i) == target:
                 self.combo_target.setCurrentIndex(i)
                 break
-
-        self.chk_bilingual.setChecked(t_opts.get("bilingual", True))
 
         export_fmt = preset.get("export_format", "")
         for i in range(self.combo_export.count()):
@@ -353,7 +389,18 @@ class MainWindow(QMainWindow):
     def _refresh_ollama_models(self):
         url = self.edit_ollama_url.text().strip() or "http://localhost:11434"
         self.combo_ollama_model.clear()
-        models = list_ollama_models(url)
+        self.combo_ollama_model.addItem("加载中...")
+        self.btn_refresh_models.setEnabled(False)
+
+        self._model_worker = _ModelListWorker(url)
+        self._model_worker.models_loaded.connect(self._on_models_loaded)
+        self._model_worker.finished.connect(
+            lambda: self.btn_refresh_models.setEnabled(True)
+        )
+        self._model_worker.start()
+
+    def _on_models_loaded(self, models: list):
+        self.combo_ollama_model.clear()
         if models:
             self.combo_ollama_model.addItems(models)
         else:
@@ -363,8 +410,6 @@ class MainWindow(QMainWindow):
         self.combo_provider.setEnabled(checked)
         self.combo_source.setEnabled(checked)
         self.combo_target.setEnabled(checked)
-        self.chk_bilingual.setEnabled(checked)
-        self.chk_pure_translated.setEnabled(checked)
         self.btn_glossary.setEnabled(checked)
         self.edit_glossary.setEnabled(checked)
         if checked:
@@ -394,14 +439,13 @@ class MainWindow(QMainWindow):
             "clean": self.chk_clean.isChecked(),
             "force_ocr": self.chk_force.isChecked(),
             "extract_md": self.chk_extract.isChecked(),
-            "language": "eng",
+            "language": self.combo_ocr_lang.currentData(),
+            "pages": self.edit_pages.text().strip(),
             "translate": self.chk_translate.isChecked(),
             "translate_options": {
                 "provider": provider,
                 "source": self.combo_source.currentData(),
                 "target": self.combo_target.currentData(),
-                "bilingual": self.chk_bilingual.isChecked(),
-                "pure_translated": self.chk_pure_translated.isChecked(),
                 "baidu_appid": self.edit_baidu_appid.text().strip(),
                 "baidu_key": self.edit_baidu_key.text().strip(),
                 "ollama_url": self.edit_ollama_url.text().strip(),
@@ -414,6 +458,10 @@ class MainWindow(QMainWindow):
     # ── 处理 ──
 
     def _start_process(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.cancel()
+            return
+
         files = self._get_file_list()
         if not files:
             self._append_log("请先添加PDF文件")
@@ -424,9 +472,10 @@ class MainWindow(QMainWindow):
         if options["translate_options"].get("glossary"):
             self._append_log(f"已加载术语表：{len(options['translate_options']['glossary'])} 条术语")
 
-        self.btn_start.setEnabled(False)
+        self.btn_start.setText("取消")
         self.btn_preview.setEnabled(False)
         self.progress_bar.setValue(0)
+        self.lbl_stage.setText("")
         self.log_box.clear()
 
         if len(files) == 1:
@@ -437,6 +486,7 @@ class MainWindow(QMainWindow):
             self.worker = ProcessWorker(input_path, output_dir, options)
             self.worker.log_updated.connect(self._append_log)
             self.worker.progress_stage.connect(self.progress_bar.setValue)
+            self.worker.stage_updated.connect(self._on_stage_updated)
             self.worker.finished_ok.connect(self._on_finish_single)
             self.worker.error_occurred.connect(self._on_error)
             self.worker.start()
@@ -448,6 +498,7 @@ class MainWindow(QMainWindow):
             self.worker = BatchWorker(files, output_dir, options)
             self.worker.log_updated.connect(self._append_log)
             self.worker.progress_stage.connect(self.progress_bar.setValue)
+            self.worker.stage_updated.connect(self._on_stage_updated)
             self.worker.finished_ok.connect(self._on_finish_batch)
             self.worker.error_occurred.connect(self._on_error)
             self.worker.start()
@@ -455,20 +506,24 @@ class MainWindow(QMainWindow):
     def _append_log(self, text: str):
         self.log_box.append(text)
 
+    def _on_stage_updated(self, text: str):
+        self.lbl_stage.setText(text)
+
     def _on_finish_single(self, output_path: str):
         self._append_log(f"\n全部处理完成！\n输出文件：{output_path}")
-        self.btn_start.setEnabled(True)
+        self.btn_start.setText("开始处理")
         self.btn_preview.setEnabled(True)
         self.progress_bar.setValue(100)
 
     def _on_finish_batch(self, results: list):
-        self.btn_start.setEnabled(True)
+        self.btn_start.setText("开始处理")
         self.btn_preview.setEnabled(len(results) > 0)
         self.progress_bar.setValue(100)
 
     def _on_error(self, error_msg: str):
         self._append_log(f"\n处理出错：{error_msg}")
-        self.btn_start.setEnabled(True)
+        self.btn_start.setText("开始处理")
+        QMessageBox.critical(self, "处理出错", error_msg)
 
     # ── 预览 ──
 
@@ -514,3 +569,18 @@ class MainWindow(QMainWindow):
         dlg_layout.addWidget(btn_box)
 
         dialog.exec()
+
+    def closeEvent(self, event):
+        if self.worker and self.worker.isRunning():
+            reply = QMessageBox.question(
+                self, "确认退出",
+                "正在处理中，确定要退出吗？\n退出后当前任务将被中断。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                event.ignore()
+                return
+            self.worker.cancel()
+            self.worker.wait(3000)
+        event.accept()

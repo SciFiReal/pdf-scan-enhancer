@@ -238,9 +238,14 @@ class TranslateEngine:
         translator = self._get_translator()
         chunks = _split_for_api(text, BATCH_CHAR_LIMIT)
         results = []
-        for chunk in chunks:
-            results.append(self._translate_chunk(translator, chunk))
-        return "\n".join(r for r in results if r)
+        for i, chunk in enumerate(chunks):
+            result = self._translate_chunk(translator, chunk)
+            if not result:
+                logger.warning("翻译返回空结果（第 %d 段），保留原文", i + 1)
+                results.append(chunk)
+            else:
+                results.append(result)
+        return "\n".join(results)
 
     def translate_markdown(self, md_path: str, output_path: str = "",
                            progress_callback=None) -> str:

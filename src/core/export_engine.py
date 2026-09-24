@@ -42,13 +42,105 @@ class ExportEngine:
         return output_path
 
     @staticmethod
+    def merge_pdfs(pdf_paths: list[str], output_path: str) -> str:
+        """合并多个 PDF 文件为一个"""
+        import pikepdf
+
+        if not pdf_paths:
+            raise ValueError("没有可合并的 PDF 文件")
+
+        if len(pdf_paths) == 1:
+            import shutil
+            shutil.copy2(pdf_paths[0], output_path)
+            return output_path
+
+        merged = pikepdf.Pdf.new()
+        for pdf_path in pdf_paths:
+            src = pikepdf.open(pdf_path)
+            merged.pages.extend(src.pages)
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        merged.save(output_path)
+        merged.close()
+
+        logger.info("PDF 合并完成：%s（%d 个文件）", output_path, len(pdf_paths))
+        return output_path
+
+    @staticmethod
+    def export_multiple_md_to_epub(
+        md_paths: list[str], output_path: str, title: str = "",
+    ) -> str:
+        """将多个 Markdown 文件合并为一本 EPUB，每个文件作为一个章节"""
+        from ebooklib import epub
+
+        book = epub.EpubBook()
+        book.set_identifier("pdf-scan-enhancer-merged")
+        book.set_title(title or "Document")
+        book.set_language("zh-CN")
+        book.add_author("PDF Scan Enhancer")
+
+        css = epub.EpubItem(
+            uid="style",
+            file_name="style/default.css",
+            media_type="text/css",
+            content="""
+body { font-family: serif; line-height: 1.8; padding: 1em; }
+h1, h2, h3 { margin-top: 1.5em; }
+p { text-align: justify; margin: 0.8em 0; }
+em { color: #555; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #ccc; padding: 6px 10px; }
+""".encode("utf-8"),
+        )
+        book.add_item(css)
+
+        chapters = []
+        for i, md_path in enumerate(md_paths):
+            md_file = Path(md_path)
+            content = md_file.read_text(encoding="utf-8")
+            chapter_title = md_file.stem
+
+            first_line = content.strip().split("\n")[0].strip() if content.strip() else ""
+            if first_line.startswith("# "):
+                chapter_title = first_line.lstrip("# ").strip()
+
+            try:
+                import markdown
+                html_content = markdown.markdown(
+                    content, extensions=["tables", "fenced_code", "toc"],
+                )
+            except ImportError:
+                html_content = ExportEngine._md_to_html_basic(content)
+
+            c = epub.EpubHtml(
+                title=chapter_title,
+                file_name=f"chap_{i+1:02d}.xhtml",
+                lang="zh-CN",
+            )
+            c.content = f"<html><body>{html_content}</body></html>"
+            c.add_item(css)
+            book.add_item(c)
+            chapters.append(c)
+
+        book.toc = [(c,) for c in chapters]
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        book.spine = ["nav"] + chapters
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        epub.write_epub(output_path, book, {})
+
+        logger.info("EPUB 合并导出完成：%s（%d 章）", output_path, len(chapters))
+        return output_path
+
+    @staticmethod
     def _to_txt(content: str, output_path: str):
         text = re.sub(r"^#{1,6}\s+", "", content, flags=re.MULTILINE)
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
         text = re.sub(r"\*(.+?)\*", r"\1", text)
         text = re.sub(r"!\[.*?\]\(.*?\)", "", text)
         text = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", text)
-        text = re.sub(r"^---+$", "", content, flags=re.MULTILINE)
+        text = re.sub(r"^---+$", "", text, flags=re.MULTILINE)
 
         Path(output_path).write_text(text.strip(), encoding="utf-8")
 

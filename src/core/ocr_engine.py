@@ -17,9 +17,15 @@ _SEARCH_DIRS = [
     Path("E:/"),
 ]
 
+_deps_cached = False
+
 
 def _ensure_deps_on_path() -> None:
-    """自动搜索 Tesseract / Ghostscript / unpaper 并加入 PATH"""
+    """自动搜索 Tesseract / Ghostscript / unpaper 并加入 PATH（仅首次调用时搜索）"""
+    global _deps_cached
+    if _deps_cached:
+        return
+
     extra = []
     targets = {"tesseract.exe", "gswin64c.exe", "unpaper.exe"}
 
@@ -37,6 +43,8 @@ def _ensure_deps_on_path() -> None:
             if d not in current:
                 os.environ["PATH"] = d + os.pathsep + current
                 logger.debug("已加入 PATH: %s", d)
+
+    _deps_cached = True
 
 
 def _find_bin(name: str) -> str | None:
@@ -104,6 +112,7 @@ class OCREngine:
         clean: bool = True,
         force_ocr: bool = True,
         rotate_pages: bool = True,
+        pages: str = "",
     ) -> bool:
         """
         处理PDF：图像增强 + OCR层重建
@@ -114,6 +123,7 @@ class OCREngine:
         :param clean: 清理污渍噪点（需要unpaper）
         :param force_ocr: 强制重OCR（覆盖原有文字层）
         :param rotate_pages: 自动旋转页面方向（需要osd.traineddata）
+        :param pages: 页码范围，如 "1-50" 或 "1,3,5-10"，留空表示全部
         :return: 成功返回True，失败返回False
         """
         try:
@@ -138,7 +148,7 @@ class OCREngine:
                     logger.warning("osd.traineddata 缺失，跳过自动旋转（rotate_pages=False）")
                     rotate_pages = False
 
-            ocrmypdf.ocr(
+            ocrmypdf_kwargs = dict(
                 input_file=input_file,
                 output_file=output_file,
                 language=language,
@@ -150,6 +160,10 @@ class OCREngine:
                 progress_bar=False,
                 optimize=1,
             )
+            if pages:
+                ocrmypdf_kwargs["pages"] = pages
+
+            ocrmypdf.ocr(**ocrmypdf_kwargs)
 
             return output_file.exists()
 
